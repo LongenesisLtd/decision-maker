@@ -2,6 +2,26 @@
 
 Evaluate tree-structured, JSON-serializable conditions against an ordered history of typed events. Each condition resolves to either `False` or the `datetime` it was first satisfied — enabling eligibility checks, scheduling triggers, and automation rules that are stored as data, not code.
 
+```mermaid
+flowchart TD
+    subgraph events["Events  (list[dict], oldest → newest)"]
+        E1["activity_id: 2 · Jan 5"]
+        E2["activity_id: 1 · Jan 10"]
+        E3["activity_id: 1 · Jan 18"]
+    end
+
+    EH["event_happened<br/>activity_id: 1<br/>→ Jan 18"]
+    DL["delay · days: 14<br/>activity_id: 1<br/>→ Feb 1"]
+    AND["AND<br/>max(Jan 18, Feb 1)"]
+    R(["datetime(Feb 1)"])
+
+    events -.->|evaluate| EH
+    events -.->|evaluate| DL
+    EH --> AND
+    DL --> AND
+    AND --> R
+```
+
 ---
 
 ## The problems londec solves
