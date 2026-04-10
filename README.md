@@ -28,7 +28,7 @@ flowchart TD
 
 ### Rules stored in a database, not compiled into code
 
-Eligibility and scheduling logic tends to end up hardcoded: changing who qualifies for a feature requires a code change and a deploy. londec conditions are plain Python dicts — JSON-serializable, storable in a database, editable through a UI, and passed to `londec.decide` at runtime. The logic lives in data, not in a release.
+Eligibility and scheduling logic tend to end up hardcoded: changing who qualifies for a feature requires a code change and a deploy. londec conditions are plain Python dicts — JSON-serializable, storable in a database, editable through a UI, and passed to `londec.decide` at runtime. The logic lives in data, not in a release.
 
 ```python
 # Stored in DB, loaded at runtime — no deploy needed to update the rule
