@@ -1,8 +1,20 @@
 [build-system]
-requires = ["setuptools"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
-name = "decision_maker"
+name = "londec"
 version = "0.1.0"
-dependencies = []
+description = "Longenesis Decision Maker — evaluate tree-structured conditions against an ordered history of events"
+requires-python = ">=3.10"
+dependencies = [
+    "mathjson_solver",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["londec"]
