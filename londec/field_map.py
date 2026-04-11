@@ -1,25 +1,15 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass
 class FieldMap:
-    """Describes which keys (or key paths) in each event dict carry the values londec needs."""
+    """Maps semantic roles to key names in a flat event dict.
+
+    All referenced keys must exist at the root level of the event dict.
+    Callers are responsible for flattening nested structures before
+    passing events to londec.
+    """
 
     type_id: str
     created_at: str
     revoked_at: str
-    payloads: dict[str, str]
-    separator: str = "."
-
-
-def resolve(event: dict, path: str, separator: str = "."):
-    """Walk a dot-separated (or custom-separator) path through a nested dict.
-
-    Returns None on any missing key or non-dict intermediate value.
-    """
-    value = event
-    for key in path.split(separator):
-        if not isinstance(value, dict):
-            return None
-        value = value.get(key)
-    return value

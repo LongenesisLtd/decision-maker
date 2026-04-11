@@ -9,8 +9,7 @@ from .evaluators import (
     event_happened_at_least,
     event_revoked,
     delay_passed,
-    payload_match_data,
-    payload_match_derived,
+    payload_match,
     last_event_type_equals,
     available_on_date_range,
     taken_recently,
@@ -60,20 +59,9 @@ def decide(
         case "delay":
             return delay_passed(condition["activity_id"], condition["days"], events, field_map)
 
-        case "payload_match_data":
-            return payload_match_data(
-                condition["activity_id"],
-                condition["question"],
-                condition.get("answer"),
-                condition,
-                events,
-                field_map,
-                seq_num=int(condition.get("seq_num", 0)),
-            )
-
-        case "payload_match_derived":
-            return payload_match_derived(
-                condition["expression"],
+        case "payload_match":
+            return payload_match(
+                condition["key"],
                 condition.get("answer"),
                 condition,
                 events,

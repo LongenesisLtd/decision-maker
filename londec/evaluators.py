@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 from mathjson_solver import MathJSONException
 
 from .exp_types import exp_types
-from .field_map import FieldMap, resolve
+from .field_map import FieldMap
 
 logger = logging.getLogger(__name__)
 
@@ -15,24 +15,26 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def _events_of_type(events: list[dict], type_id, field_map: FieldMap) -> list[dict]:
-    return [
-        e for e in events
-        if resolve(e, field_map.type_id, field_map.separator) == type_id
-    ]
+    return [e for e in events if e.get(field_map.type_id) == type_id]
 
 
 def _active_events_of_type(events: list[dict], type_id, field_map: FieldMap) -> list[dict]:
     """Events matching type_id that have not been revoked."""
     return [
         e for e in _events_of_type(events, type_id, field_map)
-        if resolve(e, field_map.revoked_at, field_map.separator) is None
+        if e.get(field_map.revoked_at) is None
     ]
+
+
+def _active_events(events: list[dict], field_map: FieldMap) -> list[dict]:
+    """All non-revoked events regardless of type."""
+    return [e for e in events if e.get(field_map.revoked_at) is None]
 
 
 def _last_created_at(events: list[dict], type_id, field_map: FieldMap) -> datetime.datetime | None:
     active = _active_events_of_type(events, type_id, field_map)
     if active:
-        return resolve(active[-1], field_map.created_at, field_map.separator)
+        return active[-1].get(field_map.created_at)
     return None
 
 
@@ -40,38 +42,43 @@ def _times_happened(events: list[dict], type_id, field_map: FieldMap) -> int:
     return len(_active_events_of_type(events, type_id, field_map))
 
 
-def _match_in_payload(
+def _event_at(active: list[dict], seq_num: int) -> dict | None:
+    """Return the event at position seq_num (0 = most recent) from an already-filtered list."""
+    try:
+        return list(reversed(active))[seq_num]
+    except IndexError:
+        return None
+
+
+def _key_match(
     event: dict,
-    question: str,
+    key: str,
     answer,
     condition: dict,
     field_map: FieldMap,
-    payload_name: str,
 ) -> bool | datetime.datetime:
-    """Check whether a question/answer matches within the named payload namespace."""
-    payload_path = field_map.payloads[payload_name]
-    payload = resolve(event, payload_path, field_map.separator) or {}
-    created_at = resolve(event, field_map.created_at, field_map.separator)
+    """Check whether a key/answer matches in the flat event dict."""
+    created_at = event.get(field_map.created_at)
 
     if "sub_type" in condition:
         try:
             sub_type = condition["sub_type"]
             if sub_type not in exp_types:
                 return False
-            value = payload.get(question, "certainly not the answer you are looking for")
+            value = event.get(key, "certainly not the answer you are looking for")
             if exp_types[sub_type](value, answer):
                 return created_at
             return False
         except MathJSONException as e:
-            logger.debug(f"payload match failed: {e}")
+            logger.debug(f"key match failed: {e}")
             return False
         except Exception as e:
             logger.error(e)
             return False
     else:
-        if question not in payload:
+        if key not in event:
             return False
-        if payload.get(question) == answer:
+        if event.get(key) == answer:
             return created_at
         return False
 
@@ -117,11 +124,11 @@ def event_revoked(
 ) -> bool | datetime.datetime:
     revoked = [
         e for e in _events_of_type(events, type_id, field_map)
-        if resolve(e, field_map.revoked_at, field_map.separator) is not None
+        if e.get(field_map.revoked_at) is not None
     ]
     if not revoked:
         return False
-    return resolve(revoked[-1], field_map.revoked_at, field_map.separator)
+    return revoked[-1].get(field_map.revoked_at)
 
 
 def delay_passed(
@@ -134,32 +141,8 @@ def delay_passed(
     return False
 
 
-def _event_at(active: list[dict], seq_num: int) -> dict | None:
-    """Return the event at position seq_num (0 = most recent) from an already-filtered list."""
-    try:
-        return list(reversed(active))[seq_num]
-    except IndexError:
-        return None
-
-
-def payload_match_data(
-    type_id,
-    question: str,
-    answer,
-    condition: dict,
-    events: list[dict],
-    field_map: FieldMap,
-    seq_num: int = 0,
-) -> bool | datetime.datetime:
-    active = _active_events_of_type(events, type_id, field_map)
-    event = _event_at(active, seq_num)
-    if event is None:
-        return False
-    return _match_in_payload(event, question, answer, condition, field_map, "data")
-
-
-def payload_match_derived(
-    question: str,
+def payload_match(
+    key: str,
     answer,
     condition: dict,
     events: list[dict],
@@ -167,23 +150,20 @@ def payload_match_derived(
     type_id=None,
     seq_num: int = 0,
 ) -> bool | datetime.datetime:
-    """Match against the derived payload at seq_num.
+    """Match a key/answer against a flat event dict.
 
     If type_id is given, only events of that type are considered.
-    If type_id is None, all non-revoked events are considered — the caller
-    (adapter) is responsible for merging all derived sources into the payload.
+    If type_id is None, all non-revoked events are considered.
     """
-    if type_id is not None:
-        active = _active_events_of_type(events, type_id, field_map)
-    else:
-        active = [
-            e for e in events
-            if resolve(e, field_map.revoked_at, field_map.separator) is None
-        ]
+    active = (
+        _active_events_of_type(events, type_id, field_map)
+        if type_id is not None
+        else _active_events(events, field_map)
+    )
     event = _event_at(active, seq_num)
     if event is None:
         return False
-    return _match_in_payload(event, question, answer, condition, field_map, "derived")
+    return _key_match(event, key, answer, condition, field_map)
 
 
 def last_event_type_equals(
@@ -193,8 +173,8 @@ def last_event_type_equals(
     events_reversed = list(reversed(events))
     try:
         event = events_reversed[seq_num]
-        if resolve(event, field_map.type_id, field_map.separator) == type_id:
-            return resolve(event, field_map.created_at, field_map.separator)
+        if event.get(field_map.type_id) == type_id:
+            return event.get(field_map.created_at)
         return False
     except IndexError:
         return False
@@ -247,7 +227,7 @@ def taken_recently(
     if not active:
         return False
 
-    last_created_at = resolve(active[-1], field_map.created_at, field_map.separator)
+    last_created_at = active[-1].get(field_map.created_at)
 
     if duration_type == "days":
         delta = datetime.timedelta(days=duration)

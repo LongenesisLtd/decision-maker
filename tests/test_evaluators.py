@@ -9,8 +9,7 @@ from londec.evaluators import (
     event_happened_at_least,
     event_revoked,
     delay_passed,
-    payload_match_data,
-    payload_match_derived,
+    payload_match,
     last_event_type_equals,
     available_on_date_range,
     taken_recently,
@@ -122,152 +121,96 @@ class TestDelayPassed:
         assert delay_passed(1, 7, [], FIELD_MAP) is False
 
 
-class TestPayloadMatchData:
+class TestPayloadMatch:
     def test_exact_match_returns_created_at(self):
         created_at = dt(1)
-        events = [make_event(1, created_at=created_at, answers_json={"q": "yes"})]
-        condition = {"type": "answer", "question": "q", "answer": "yes"}
-        assert payload_match_data(1, "q", "yes", condition, events, FIELD_MAP) == created_at
+        events = [make_event(1, created_at=created_at, q="yes")]
+        assert payload_match("q", "yes", {}, events, FIELD_MAP, type_id=1) == created_at
 
     def test_no_match_returns_false(self):
-        events = [make_event(1, answers_json={"q": "no"})]
-        condition = {"type": "answer", "question": "q", "answer": "yes"}
-        assert payload_match_data(1, "q", "yes", condition, events, FIELD_MAP) is False
+        events = [make_event(1, q="no")]
+        assert payload_match("q", "yes", {}, events, FIELD_MAP, type_id=1) is False
 
-    def test_missing_question_returns_false(self):
-        events = [make_event(1, answers_json={"other": "yes"})]
-        condition = {"type": "answer", "question": "q", "answer": "yes"}
-        assert payload_match_data(1, "q", "yes", condition, events, FIELD_MAP) is False
+    def test_missing_key_returns_false(self):
+        events = [make_event(1, other="yes")]
+        assert payload_match("q", "yes", {}, events, FIELD_MAP, type_id=1) is False
 
     def test_no_event_returns_false(self):
-        condition = {"type": "answer", "question": "q", "answer": "yes"}
-        assert payload_match_data(1, "q", "yes", condition, [], FIELD_MAP) is False
+        assert payload_match("q", "yes", {}, [], FIELD_MAP, type_id=1) is False
 
     def test_none_answer_match(self):
         created_at = dt(1)
-        events = [make_event(1, created_at=created_at, answers_json={"q": None})]
-        condition = {"type": "answer", "question": "q", "answer": None}
-        assert payload_match_data(1, "q", None, condition, events, FIELD_MAP) == created_at
+        events = [make_event(1, created_at=created_at, q=None)]
+        assert payload_match("q", None, {}, events, FIELD_MAP, type_id=1) == created_at
 
     def test_sub_type_gt(self):
         created_at = dt(1)
-        events = [make_event(1, created_at=created_at, answers_json={"score": "10"})]
-        condition = {"type": "answer", "question": "score", "answer": "5", "sub_type": "gt"}
-        assert payload_match_data(1, "score", "5", condition, events, FIELD_MAP) == created_at
+        events = [make_event(1, created_at=created_at, score="10")]
+        assert payload_match("score", "5", {"sub_type": "gt"}, events, FIELD_MAP, type_id=1) == created_at
 
     def test_sub_type_gt_fails(self):
-        events = [make_event(1, answers_json={"score": "3"})]
-        condition = {"type": "answer", "question": "score", "answer": "5", "sub_type": "gt"}
-        assert payload_match_data(1, "score", "5", condition, events, FIELD_MAP) is False
+        events = [make_event(1, score="3")]
+        assert payload_match("score", "5", {"sub_type": "gt"}, events, FIELD_MAP, type_id=1) is False
 
     def test_ignores_revoked_event(self):
-        events = [make_event(1, answers_json={"q": "yes"}, consented_revoked_at=dt(2))]
-        condition = {"type": "answer", "question": "q", "answer": "yes"}
-        assert payload_match_data(1, "q", "yes", condition, events, FIELD_MAP) is False
+        events = [make_event(1, q="yes", consented_revoked_at=dt(2))]
+        assert payload_match("q", "yes", {}, events, FIELD_MAP, type_id=1) is False
 
     def test_uses_most_recent_event(self):
         newer = dt(3)
         events = [
-            make_event(1, created_at=dt(1), answers_json={"q": "old"}),
-            make_event(1, created_at=newer, answers_json={"q": "new"}),
+            make_event(1, created_at=dt(1), q="old"),
+            make_event(1, created_at=newer, q="new"),
         ]
-        condition = {"type": "answer", "question": "q", "answer": "new"}
-        assert payload_match_data(1, "q", "new", condition, events, FIELD_MAP) == newer
+        assert payload_match("q", "new", {}, events, FIELD_MAP, type_id=1) == newer
 
-
-class TestPayloadMatchDataSeqNum:
-    def test_seq_num_0_is_most_recent(self):
+    def test_no_type_id_checks_last_event_of_any_type(self):
+        created_at = dt(2)
         events = [
-            make_event(1, created_at=dt(1), answers_json={"q": "old"}),
-            make_event(1, created_at=dt(2), answers_json={"q": "new"}),
+            make_event(1, created_at=dt(1), total="5"),
+            make_event(2, created_at=created_at, total="10"),
         ]
-        condition = {"type": "answer"}
-        assert payload_match_data(1, "q", "new", condition, events, FIELD_MAP, seq_num=0) == dt(2)
+        assert payload_match("total", "10", {}, events, FIELD_MAP) == created_at
+
+    def test_no_type_id_ignores_revoked(self):
+        events = [
+            make_event(1, created_at=dt(1), total="5"),
+            make_event(2, created_at=dt(2), total="10", consented_revoked_at=dt(3)),
+        ]
+        assert payload_match("total", "5", {}, events, FIELD_MAP) == dt(1)
+
+    def test_no_events_with_no_type_id_returns_false(self):
+        assert payload_match("total", "10", {}, [], FIELD_MAP) is False
+
+
+class TestPayloadMatchSeqNum:
+    def test_seq_num_0_is_most_recent(self):
+        events = [make_event(1, created_at=dt(1), q="old"), make_event(1, created_at=dt(2), q="new")]
+        assert payload_match("q", "new", {}, events, FIELD_MAP, type_id=1, seq_num=0) == dt(2)
 
     def test_seq_num_1_is_second_most_recent(self):
-        events = [
-            make_event(1, created_at=dt(1), answers_json={"q": "old"}),
-            make_event(1, created_at=dt(2), answers_json={"q": "new"}),
-        ]
-        condition = {"type": "answer"}
-        assert payload_match_data(1, "q", "old", condition, events, FIELD_MAP, seq_num=1) == dt(1)
+        events = [make_event(1, created_at=dt(1), q="old"), make_event(1, created_at=dt(2), q="new")]
+        assert payload_match("q", "old", {}, events, FIELD_MAP, type_id=1, seq_num=1) == dt(1)
 
     def test_seq_num_out_of_range_returns_false(self):
-        events = [make_event(1, answers_json={"q": "yes"})]
-        condition = {"type": "answer"}
-        assert payload_match_data(1, "q", "yes", condition, events, FIELD_MAP, seq_num=5) is False
+        events = [make_event(1, q="yes")]
+        assert payload_match("q", "yes", {}, events, FIELD_MAP, type_id=1, seq_num=5) is False
 
     def test_seq_num_skips_revoked_events(self):
         events = [
-            make_event(1, created_at=dt(1), answers_json={"q": "a"}),
-            make_event(1, created_at=dt(2), answers_json={"q": "b"}, consented_revoked_at=dt(3)),
-            make_event(1, created_at=dt(4), answers_json={"q": "c"}),
+            make_event(1, created_at=dt(1), q="a"),
+            make_event(1, created_at=dt(2), q="b", consented_revoked_at=dt(3)),
+            make_event(1, created_at=dt(4), q="c"),
         ]
-        condition = {"type": "answer"}
-        # seq_num=0 → "c" (dt(4)), seq_num=1 → "a" (dt(1)); revoked dt(2) is skipped
-        assert payload_match_data(1, "q", "c", condition, events, FIELD_MAP, seq_num=0) == dt(4)
-        assert payload_match_data(1, "q", "a", condition, events, FIELD_MAP, seq_num=1) == dt(1)
+        assert payload_match("q", "c", {}, events, FIELD_MAP, type_id=1, seq_num=0) == dt(4)
+        assert payload_match("q", "a", {}, events, FIELD_MAP, type_id=1, seq_num=1) == dt(1)
 
-
-class TestPayloadMatchDerived:
-    def test_exact_match_with_activity_id(self):
-        created_at = dt(1)
-        events = [make_event(1, created_at=created_at, derived={"score": "high"})]
-        condition = {}
-        assert payload_match_derived("score", "high", condition, events, FIELD_MAP, type_id=1) == created_at
-
-    def test_no_match(self):
-        events = [make_event(1, derived={"score": "low"})]
-        condition = {}
-        assert payload_match_derived("score", "high", condition, events, FIELD_MAP, type_id=1) is False
-
-    def test_sub_type_lt(self):
-        created_at = dt(1)
-        events = [make_event(1, created_at=created_at, derived={"bmi": "22"})]
-        condition = {"sub_type": "lt"}
-        assert payload_match_derived("bmi", "25", condition, events, FIELD_MAP, type_id=1) == created_at
-
-    def test_no_activity_id_matches_last_event_of_any_type(self):
-        created_at = dt(2)
+    def test_seq_num_1_without_type_id(self):
         events = [
-            make_event(1, created_at=dt(1), derived={"total": "5"}),
-            make_event(2, created_at=created_at, derived={"total": "10"}),
+            make_event(1, created_at=dt(1), total="5"),
+            make_event(2, created_at=dt(2), total="10"),
         ]
-        condition = {}
-        assert payload_match_derived("total", "10", condition, events, FIELD_MAP) == created_at
-
-    def test_no_events_returns_false(self):
-        assert payload_match_derived("total", "10", {}, [], FIELD_MAP) is False
-
-    def test_ignores_revoked_when_no_activity_id(self):
-        events = [
-            make_event(1, created_at=dt(1), derived={"total": "5"}),
-            make_event(2, created_at=dt(2), derived={"total": "10"}, consented_revoked_at=dt(3)),
-        ]
-        condition = {}
-        assert payload_match_derived("total", "5", condition, events, FIELD_MAP) == dt(1)
-
-
-class TestPayloadMatchDerivedSeqNum:
-    def test_seq_num_1_checks_second_most_recent_with_activity_id(self):
-        events = [
-            make_event(1, created_at=dt(1), derived={"score": "low"}),
-            make_event(1, created_at=dt(2), derived={"score": "high"}),
-        ]
-        condition = {}
-        assert payload_match_derived("score", "low", condition, events, FIELD_MAP, type_id=1, seq_num=1) == dt(1)
-
-    def test_seq_num_1_checks_second_most_recent_without_activity_id(self):
-        events = [
-            make_event(1, created_at=dt(1), derived={"total": "5"}),
-            make_event(2, created_at=dt(2), derived={"total": "10"}),
-        ]
-        condition = {}
-        assert payload_match_derived("total", "5", condition, events, FIELD_MAP, seq_num=1) == dt(1)
-
-    def test_seq_num_out_of_range_returns_false(self):
-        events = [make_event(1, derived={"score": "high"})]
-        assert payload_match_derived("score", "high", {}, events, FIELD_MAP, type_id=1, seq_num=3) is False
+        assert payload_match("total", "5", {}, events, FIELD_MAP, seq_num=1) == dt(1)
 
 
 class TestLastEventTypeEquals:
