@@ -92,49 +92,39 @@ condition = {
 
 Nesting is unrestricted — OR inside AND, AND inside OR — allowing arbitrarily complex rules without writing new evaluator code.
 
-### Checking data values and computed metrics across the event history
+### Checking data values across the event history
 
-Conditions can match against raw event data (`payload_match_data`) or pre-computed derived values such as aggregates and computed metrics (`payload_match_derived`). Both operate on the most recent event by default, or at a specific position in the event history via `seq_num`.
+`payload_match` checks the value of any key in the event dict against an expected answer. It operates on the most recent event by default, or at a specific position in the event history via `seq_num`.
 
 ```python
-# "The user's most recent risk score exceeds the threshold"
-{"type": "payload_match_derived", "activity_id": "assessment", "expression": "risk_score", "answer": "7", "sub_type": "gte"}
+# "The most recent assessment event has a risk_score of at least 7"
+{"type": "payload_match", "activity_id": "assessment", "key": "risk_score", "answer": "7", "sub_type": "gte"}
 
-# "The second-most-recent check-in had a low engagement score"
-{"type": "payload_match_derived", "activity_id": "check_in", "expression": "engagement", "answer": "3", "sub_type": "lt", "seq_num": 1}
+# "The second-most-recent check-in had an engagement score below 3"
+{"type": "payload_match", "activity_id": "check_in", "key": "engagement", "answer": "3", "sub_type": "lt", "seq_num": 1}
 
 # "The most recent event of any type flagged the account for review"
-# (no activity_id → checks across all event types; caller merges derived sources before passing events)
-{"type": "payload_match_derived", "expression": "review_flag", "answer": "true"}
+# (no activity_id → checks across all event types)
+{"type": "payload_match", "key": "review_flag", "answer": "true"}
 ```
 
 `seq_num` counts from the most recent: `0` (default) is the latest, `1` is the second latest, and so on. Revoked events are excluded before indexing.
 
-### Domain-agnostic — works with any event structure
+### Domain-agnostic — works with any flat event structure
 
-londec has no opinion about your data model. You tell it how to interpret your event dicts through a `FieldMap`:
+londec has no opinion about your data model. Events are plain dicts; all keys londec needs must be present at the root level. You tell londec which keys carry the meaningful values through a `FieldMap`:
 
 ```python
 from londec import FieldMap
 
 FIELD_MAP = FieldMap(
-    type_id="event_type",       # path to the field that identifies the event type
-    created_at="occurred_at",   # path to the event timestamp
-    revoked_at="cancelled_at",  # path to the cancellation/revocation timestamp (None = active)
-    payloads={
-        "data":    "payload",       # raw event data
-        "derived": "_derived",      # computed values merged in by the caller
-    },
+    type_id="event_type",     # key that identifies the event type
+    created_at="occurred_at", # key holding the event timestamp
+    revoked_at="cancelled_at" # key holding the cancellation timestamp (None = active)
 )
 ```
 
-Paths are dot-separated by default and walk nested dicts one segment at a time. If your keys contain dots, configure a different separator:
-
-```python
-FieldMap(..., separator="::")
-```
-
-Callers who prefer to pre-flatten their event dicts can use single-key paths and skip path resolution entirely.
+All other keys in the event dict — whether raw data, computed metrics, or anything else — are accessed directly by name in `payload_match` conditions. The caller is responsible for flattening nested structures and resolving any key collisions before passing events to londec.
 
 ### No I/O, no ORM, no framework
 
@@ -161,16 +151,77 @@ def test_eligible_after_onboarding_delay():
 
 ### Events
 
-A `list[dict]` sorted oldest-first. londec does not impose a schema — you supply any dicts and tell it which paths carry the meaningful values via a `FieldMap`.
+A `list[dict]` sorted oldest-first. londec requires flat dicts — all keys it needs to read must be at the root level. The caller is responsible for flattening nested structures before passing events to londec.
+
+```python
+events = [
+    {
+        "event_type": "account_created",
+        "occurred_at": datetime(2026, 1, 1, tzinfo=UTC),
+        "cancelled_at": None,
+        "plan": "trial",
+    },
+    {
+        "event_type": "order_placed",
+        "occurred_at": datetime(2026, 1, 10, tzinfo=UTC),
+        "cancelled_at": None,
+        "amount": 49.00,
+        "currency": "EUR",
+        "lifetime_value": 49.00,
+        "order_count": 1,
+    },
+    {
+        "event_type": "order_placed",
+        "occurred_at": datetime(2026, 2, 3, tzinfo=UTC),
+        "cancelled_at": None,
+        "amount": 79.00,
+        "currency": "EUR",
+        "lifetime_value": 128.00,
+        "order_count": 2,
+    },
+]
+```
+
+A different system might use entirely different field names — londec works the same way, as long as the `FieldMap` describes the structure:
+
+```python
+events = [
+    {
+        "kind": "build",
+        "ts": datetime(2026, 3, 10, 9, 0, tzinfo=UTC),
+        "reverted_at": None,
+        "branch": "main",
+        "triggered_by": "push",
+        "coverage": 91,
+        "lint_errors": 0,
+    },
+    {
+        "kind": "deploy",
+        "ts": datetime(2026, 3, 10, 9, 45, tzinfo=UTC),
+        "reverted_at": None,
+        "environment": "staging",
+        "version": "2.1.0",
+        "smoke_passed": True,
+        "response_time_ms": 210,
+    },
+]
+
+FIELD_MAP = FieldMap(
+    type_id="kind",
+    created_at="ts",
+    revoked_at="reverted_at",
+)
+```
 
 ### FieldMap
 
-Maps semantic roles to paths in your event dicts. The `payloads` dict has exactly two named namespaces:
+Maps three semantic roles to key names in your flat event dicts:
 
-- `"data"` — raw event data (e.g. form submissions, action payloads)
-- `"derived"` — computed values: aggregates, scores, flags, or any value calculated from the event history
+- `type_id` — the key that identifies what kind of event this is
+- `created_at` — the key holding the event timestamp
+- `revoked_at` — the key holding the cancellation/revocation timestamp (`None` means the event is active)
 
-If computed values from multiple sources share a key name, that is a caller concern, not a londec concern. The caller is responsible for merging sources into a single derived dict before passing events to londec.
+All other event data — raw values, computed metrics, flags — is accessed directly by key name in `payload_match` conditions.
 
 ### Condition
 
@@ -207,16 +258,17 @@ A plain dict with a `"type"` key. If `"type"` is absent, the condition is treate
 
 ### Payload matching
 
-Both types accept an optional `seq_num` (int or string, default `0`). `seq_num=0` checks the most recent event, `seq_num=1` the second most recent, and so on. Revoked events are excluded before indexing.
+`payload_match` checks the value at `key` in the matching event dict. `activity_id` is optional — when omitted, the condition checks the Nth most recent event across all event types.
 
-| Type | Looks in | `activity_id` | Fields |
-|---|---|---|---|
-| `payload_match_data` | `payloads["data"]` | Required | `activity_id`, `question`, `answer`, `sub_type` (optional), `seq_num` (optional) |
-| `payload_match_derived` | `payloads["derived"]` | Optional | `expression`, `answer`, `sub_type` (optional), `activity_id` (optional), `seq_num` (optional) |
+`seq_num` (int or string, default `0`) selects the event position: `0` is the most recent, `1` the second most recent, and so on. Revoked events are excluded before indexing.
 
-When `activity_id` is present in `payload_match_derived`, only events of that type are considered. When absent, the Nth most recent event across all event types is used — the caller is responsible for merging all derived sources into the derived payload before passing events to londec.
-
-When `sub_type` is present, the match uses an expression evaluator (e.g. `"gte"`, `"lt"`, `"in"`) rather than equality. Without `sub_type`, the match is strict equality.
+| Field | Required | Description |
+|---|---|---|
+| `key` | Yes | Key to look up in the event dict |
+| `answer` | Yes | Expected value |
+| `activity_id` | No | Filter to events of this type only |
+| `sub_type` | No | Expression evaluator (see below); defaults to strict equality |
+| `seq_num` | No | Position index (default `0` = most recent) |
 
 ### Sequence
 
@@ -237,7 +289,7 @@ When `sub_type` is present, the match uses an expression evaluator (e.g. `"gte"`
 
 ## `sub_type` expression evaluators
 
-Used with `payload_match_data` and `payload_match_derived` to perform comparisons beyond strict equality.
+Used with `payload_match` to perform comparisons beyond strict equality.
 
 | `sub_type` | Comparison |
 |---|---|
