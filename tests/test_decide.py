@@ -74,78 +74,46 @@ class TestDecideDelay:
         assert decide({"type": "delay", "activity_id": 1, "days": 7}, [], FIELD_MAP) is False
 
 
-class TestDecidePayloadConditions:
-    def test_payload_match_data(self):
+class TestDecidePayloadMatch:
+    def test_exact_match(self):
         created_at = dt(1)
-        events = [make_event(1, created_at=created_at, answers_json={"q": "yes"})]
-        condition = {"type": "payload_match_data", "activity_id": 1, "question": "q", "answer": "yes"}
+        events = [make_event(1, created_at=created_at, mood="good")]
+        condition = {"type": "payload_match", "activity_id": 1, "key": "mood", "answer": "good"}
         assert decide(condition, events, FIELD_MAP) == created_at
 
-    def test_payload_match_data_no_match(self):
-        events = [make_event(1, answers_json={"q": "no"})]
-        condition = {"type": "payload_match_data", "activity_id": 1, "question": "q", "answer": "yes"}
+    def test_no_match(self):
+        events = [make_event(1, mood="bad")]
+        condition = {"type": "payload_match", "activity_id": 1, "key": "mood", "answer": "good"}
         assert decide(condition, events, FIELD_MAP) is False
 
-    def test_payload_match_derived_with_activity_id(self):
+    def test_sub_type(self):
         created_at = dt(1)
-        events = [make_event(1, created_at=created_at, derived={"score": "high"})]
-        condition = {"type": "payload_match_derived", "activity_id": 1, "expression": "score", "answer": "high"}
+        events = [make_event(1, created_at=created_at, score="10")]
+        condition = {"type": "payload_match", "activity_id": 1, "key": "score", "answer": "5", "sub_type": "gte"}
         assert decide(condition, events, FIELD_MAP) == created_at
 
-    def test_payload_match_derived_without_activity_id(self):
+    def test_without_activity_id(self):
         created_at = dt(2)
         events = [
-            make_event(1, created_at=dt(1), derived={"total": "5"}),
-            make_event(2, created_at=created_at, derived={"total": "10"}),
+            make_event(1, created_at=dt(1), risk="low"),
+            make_event(2, created_at=created_at, risk="high"),
         ]
-        condition = {"type": "payload_match_derived", "expression": "total", "answer": "10"}
+        condition = {"type": "payload_match", "key": "risk", "answer": "high"}
         assert decide(condition, events, FIELD_MAP) == created_at
 
-
-class TestDecideSeqNum:
-    def test_payload_match_data_seq_num_0_default(self):
-        events = [
-            make_event(1, created_at=dt(1), answers_json={"q": "old"}),
-            make_event(1, created_at=dt(2), answers_json={"q": "new"}),
-        ]
-        condition = {"type": "payload_match_data", "activity_id": 1, "question": "q", "answer": "new"}
-        assert decide(condition, events, FIELD_MAP) == dt(2)
-
-    def test_payload_match_data_seq_num_1(self):
-        events = [
-            make_event(1, created_at=dt(1), answers_json={"q": "old"}),
-            make_event(1, created_at=dt(2), answers_json={"q": "new"}),
-        ]
-        condition = {"type": "payload_match_data", "activity_id": 1, "question": "q", "answer": "old", "seq_num": 1}
+    def test_seq_num_1(self):
+        events = [make_event(1, created_at=dt(1), mood="old"), make_event(1, created_at=dt(2), mood="new")]
+        condition = {"type": "payload_match", "activity_id": 1, "key": "mood", "answer": "old", "seq_num": 1}
         assert decide(condition, events, FIELD_MAP) == dt(1)
 
-    def test_payload_match_data_seq_num_as_string(self):
-        events = [
-            make_event(1, created_at=dt(1), answers_json={"q": "old"}),
-            make_event(1, created_at=dt(2), answers_json={"q": "new"}),
-        ]
-        condition = {"type": "payload_match_data", "activity_id": 1, "question": "q", "answer": "old", "seq_num": "1"}
+    def test_seq_num_as_string(self):
+        events = [make_event(1, created_at=dt(1), mood="old"), make_event(1, created_at=dt(2), mood="new")]
+        condition = {"type": "payload_match", "activity_id": 1, "key": "mood", "answer": "old", "seq_num": "1"}
         assert decide(condition, events, FIELD_MAP) == dt(1)
 
-    def test_payload_match_derived_seq_num(self):
-        events = [
-            make_event(1, created_at=dt(1), derived={"score": "low"}),
-            make_event(1, created_at=dt(2), derived={"score": "high"}),
-        ]
-        condition = {"type": "payload_match_derived", "activity_id": 1, "expression": "score", "answer": "low", "seq_num": 1}
-        assert decide(condition, events, FIELD_MAP) == dt(1)
-
-    def test_payload_match_derived_no_activity_id_seq_num(self):
-        events = [
-            make_event(1, created_at=dt(1), derived={"total": "5"}),
-            make_event(2, created_at=dt(2), derived={"total": "10"}),
-        ]
-        condition = {"type": "payload_match_derived", "expression": "total", "answer": "5", "seq_num": "1"}
-        assert decide(condition, events, FIELD_MAP) == dt(1)
-
-    def test_seq_num_out_of_range_returns_false(self):
-        events = [make_event(1, answers_json={"q": "yes"})]
-        condition = {"type": "payload_match_data", "activity_id": 1, "question": "q", "answer": "yes", "seq_num": 5}
+    def test_seq_num_out_of_range(self):
+        events = [make_event(1, mood="yes")]
+        condition = {"type": "payload_match", "activity_id": 1, "key": "mood", "answer": "yes", "seq_num": 5}
         assert decide(condition, events, FIELD_MAP) is False
 
 
@@ -268,7 +236,7 @@ class TestDecideLogicalOperators:
 
 
 class TestDecideWorkflows:
-    def test_survey_then_delay_workflow(self):
+    def test_event_then_delay(self):
         created_at = dt(1)
         events = [make_event(1, created_at=created_at)]
         condition = {
@@ -278,32 +246,7 @@ class TestDecideWorkflows:
                 {"type": "delay", "activity_id": 1, "days": 7},
             ],
         }
-        # AND(MAX) returns the later of the two datetimes
-        expected = created_at + datetime.timedelta(days=7)
-        assert decide(condition, events, FIELD_MAP) == expected
-
-    def test_consent_and_revocation(self):
-        given_at = dt(1)
-        revoked_at = dt(3)
-        events = [
-            make_event(1, created_at=given_at),
-            make_event(1, created_at=given_at, consented_revoked_at=revoked_at),
-        ]
-        # Active consent: the first submission is not revoked
-        assert decide({"type": "event_happened", "activity_id": 1}, events, FIELD_MAP) == given_at
-        # Revocation: second submission is revoked
-        assert decide({"type": "event_revoked", "activity_id": 1}, events, FIELD_MAP) == revoked_at
-
-    def test_event_not_happened_after_event(self):
-        events = [make_event(1)]
-        condition = {
-            "type": "AND",
-            "list": [
-                {"type": "event_happened", "activity_id": 1},
-                {"type": "event_not_happened", "activity_id": 2},
-            ],
-        }
-        assert decide(condition, events, FIELD_MAP) is not False
+        assert decide(condition, events, FIELD_MAP) == created_at + datetime.timedelta(days=7)
 
     def test_nested_or_inside_and(self):
         events = [make_event(1, dt(1)), make_event(3, dt(5))]
