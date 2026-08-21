@@ -1,6 +1,8 @@
-# londec — Longenesis Decision Maker
+# londec — Decision Maker
 
 Evaluate tree-structured, JSON-serializable conditions against an ordered history of typed events. Each condition resolves to either `False` or the `datetime` it was first satisfied — enabling eligibility checks, scheduling triggers, and automation rules that are stored as data, not code.
+
+> `londec` was created by [Longenesis](https://longenesis.com) to solve complex eligibility rules in patient journeys — deciding, from a participant's accumulating history of activities and submissions, whether and when they qualify for the next step. The library itself is domain-agnostic and works with any ordered event history, not just healthcare data.
 
 ```mermaid
 flowchart TD
@@ -60,7 +62,7 @@ result = londec.decide(
 # datetime(...)  → the moment the 14-day window opens; schedule the follow-up for then
 ```
 
-This makes londec useful not just for access control ("is this user eligible right now?") but for proactive scheduling ("when should this rule next be evaluated or triggered?").
+This makes `londec` useful not just for access control ("is this user eligible right now?") but for proactive scheduling ("when should this rule next be evaluated or triggered?").
 
 Use cases that benefit from this:
 

@@ -5,8 +5,15 @@ build-backend = "hatchling.build"
 [project]
 name = "londec"
 version = "0.1.0"
-description = "Longenesis Decision Maker — evaluate tree-structured conditions against an ordered history of events"
+authors = [{name = "Martins Mednis", email = "mrt@mednis.info"}]
+description = "Decision Maker — evaluate tree-structured conditions against an ordered history of events"
+readme = "README.md"
+license = "MIT"
 requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
 dependencies = [
     "mathjson_solver",
 ]
@@ -15,6 +22,10 @@ dependencies = [
 dev = [
     "pytest",
 ]
+
+[project.urls]
+Homepage = "https://github.com/LongenesisLtd/decision-maker"
+"Bug Tracker" = "https://github.com/LongenesisLtd/decision-maker/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["londec"]
