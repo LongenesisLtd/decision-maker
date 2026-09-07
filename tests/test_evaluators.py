@@ -1,6 +1,8 @@
 import datetime
 import pytest
 from zoneinfo import ZoneInfo
+from mathjson_solver import MathJSONException
+from londec import evaluators
 from londec.decision import Decision
 from londec.evaluators import (
     event_happened,
@@ -139,6 +141,21 @@ class TestDelayPassed:
     def test_returns_false_when_no_event(self):
         assert delay_passed(1, 7, [], FIELD_MAP, dt(10)) == Decision(False)
 
+    def test_uses_wall_clock_now_when_not_provided_satisfied(self):
+        """`now` defaults to datetime.now(UTC) when the caller doesn't pass one."""
+        created_at = datetime.datetime(2000, 1, 1, tzinfo=datetime.timezone.utc)
+        events = [make_event(1, created_at=created_at)]
+        result = delay_passed(1, 7, events, FIELD_MAP)
+        assert result.satisfied is True
+        assert result.when == created_at + datetime.timedelta(days=7)
+
+    def test_uses_wall_clock_now_when_not_provided_not_yet_satisfied(self):
+        created_at = datetime.datetime.now(datetime.timezone.utc)
+        events = [make_event(1, created_at=created_at)]
+        result = delay_passed(1, 999999, events, FIELD_MAP)
+        assert result.satisfied is False
+        assert result.when == created_at + datetime.timedelta(days=999999)
+
 
 class TestPayloadMatch:
     def test_exact_match_returns_created_at(self):
@@ -170,6 +187,29 @@ class TestPayloadMatch:
     def test_sub_type_gt_fails(self):
         events = [make_event(1, score="3")]
         assert payload_match("score", "5", {"sub_type": "gt"}, events, FIELD_MAP, type_id=1) == Decision(False)
+
+    def test_unknown_sub_type_returns_false(self):
+        events = [make_event(1, score="10")]
+        condition = {"sub_type": "not_a_real_sub_type"}
+        assert payload_match("score", "5", condition, events, FIELD_MAP, type_id=1) == Decision(False)
+
+    def test_math_json_exception_from_sub_type_is_caught(self, monkeypatch):
+        def raise_mathjson(value, answer):
+            raise MathJSONException(ValueError("boom"), "score > 5")
+
+        monkeypatch.setitem(evaluators.exp_types, "gt", raise_mathjson)
+        events = [make_event(1, score="10")]
+        condition = {"sub_type": "gt"}
+        assert payload_match("score", "5", condition, events, FIELD_MAP, type_id=1) == Decision(False)
+
+    def test_unexpected_exception_from_sub_type_is_caught(self, monkeypatch):
+        def raise_generic(value, answer):
+            raise RuntimeError("boom")
+
+        monkeypatch.setitem(evaluators.exp_types, "gt", raise_generic)
+        events = [make_event(1, score="10")]
+        condition = {"sub_type": "gt"}
+        assert payload_match("score", "5", condition, events, FIELD_MAP, type_id=1) == Decision(False)
 
     def test_ignores_revoked_event(self):
         events = [make_event(1, q="yes", consented_revoked_at=dt(2))]
@@ -294,6 +334,15 @@ class TestAvailableOnDateRange:
         expected = datetime.datetime(2025, 1, 10, 2, 0, tzinfo=ZoneInfo("UTC"))
         assert result == Decision(True, expected)
 
+    def test_uses_wall_clock_now_when_not_provided_within_range(self):
+        """`now` defaults to datetime.now(UTC) when the caller doesn't pass one."""
+        result = available_on_date_range("2000-01-01", "2999-12-31", 0)
+        assert result.satisfied is True
+
+    def test_uses_wall_clock_now_when_not_provided_after_range(self):
+        result = available_on_date_range("2000-01-01", "2000-01-31", 0)
+        assert result == Decision(False, None)
+
 
 class TestTakenRecently:
     def test_taken_within_window_returns_created_at(self):
@@ -322,3 +371,9 @@ class TestTakenRecently:
         events = [make_event(1, created_at=created_at, consented_revoked_at=dt(2))]
         now = created_at + datetime.timedelta(days=1)
         assert taken_recently(1, "days", 7, events, FIELD_MAP, now) == Decision(False)
+
+    def test_uses_wall_clock_now_when_not_provided(self):
+        """`now` defaults to datetime.now(UTC) when the caller doesn't pass one."""
+        created_at = datetime.datetime.now(datetime.timezone.utc)
+        events = [make_event(1, created_at=created_at)]
+        assert taken_recently(1, "days", 7, events, FIELD_MAP) == Decision(True, created_at)
