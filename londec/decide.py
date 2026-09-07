@@ -1,6 +1,7 @@
 import datetime
 
 from .combinators import all_or_date_max, all_or_date_min, any_or_date_min, any_or_date_max
+from .decision import Decision
 from .evaluators import (
     event_happened,
     event_not_happened,
@@ -22,17 +23,19 @@ def decide(
     events: list[dict],
     field_map: FieldMap,
     now: datetime.datetime | None = None,
-) -> bool | datetime.datetime:
+) -> Decision:
     """Evaluate a condition tree against an ordered history of events.
 
-    Returns False if the condition is not satisfied, or the datetime it was
-    first satisfied (enabling callers to schedule follow-up actions).
+    Returns a `Decision(satisfied, when)`: `satisfied` is always computed
+    directly, never inferred from comparing `when` to `now` after the fact.
+    `when`, when present, means "since this date" if satisfied, or
+    "predicted to become satisfied at this date" if not.
     """
     if now is None:
         now = datetime.datetime.now(datetime.timezone.utc)
 
     if "type" not in condition:
-        return True
+        return Decision(True)
 
     def _recurse(c):
         return decide(c, events, field_map, now)
@@ -57,7 +60,7 @@ def decide(
             return event_revoked(condition["activity_id"], events, field_map)
 
         case "delay":
-            return delay_passed(condition["activity_id"], condition["days"], events, field_map)
+            return delay_passed(condition["activity_id"], condition["days"], events, field_map, now)
 
         case "payload_match":
             return payload_match(

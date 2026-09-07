@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 
 from mathjson_solver import MathJSONException
 
+from .decision import Decision
 from .exp_types import exp_types
 from .field_map import FieldMap
 
@@ -56,19 +57,15 @@ def _key_match(
     answer,
     condition: dict,
     field_map: FieldMap,
-) -> bool | datetime.datetime:
+) -> bool:
     """Check whether a key/answer matches in the flat event dict."""
-    created_at = event.get(field_map.created_at)
-
     if "sub_type" in condition:
         try:
             sub_type = condition["sub_type"]
             if sub_type not in exp_types:
                 return False
             value = event.get(key, "certainly not the answer you are looking for")
-            if exp_types[sub_type](value, answer):
-                return created_at
-            return False
+            return bool(exp_types[sub_type](value, answer))
         except MathJSONException as e:
             logger.debug(f"key match failed: {e}")
             return False
@@ -78,67 +75,72 @@ def _key_match(
     else:
         if key not in event:
             return False
-        if event.get(key) == answer:
-            return created_at
-        return False
+        return event.get(key) == answer
 
 
 # ---------------------------------------------------------------------------
 # Leaf evaluators
 # ---------------------------------------------------------------------------
 
-def event_happened(
-    type_id, events: list[dict], field_map: FieldMap
-) -> bool | datetime.datetime:
+def event_happened(type_id, events: list[dict], field_map: FieldMap) -> Decision:
     created_at = _last_created_at(events, type_id, field_map)
-    return created_at if created_at else False
+    if created_at is None:
+        return Decision(False)
+    return Decision(True, when=created_at)
 
 
-def event_not_happened(type_id, events: list[dict], field_map: FieldMap) -> bool:
-    return _times_happened(events, type_id, field_map) == 0
+def event_not_happened(type_id, events: list[dict], field_map: FieldMap) -> Decision:
+    return Decision(_times_happened(events, type_id, field_map) == 0)
 
 
 def event_happened_exactly(
     type_id, x: int, events: list[dict], field_map: FieldMap
-) -> bool | datetime.datetime:
+) -> Decision:
     last_created_at = _last_created_at(events, type_id, field_map)
     if last_created_at and _times_happened(events, type_id, field_map) == x:
-        return last_created_at
-    return False
+        return Decision(True, when=last_created_at)
+    return Decision(False)
 
 
 def event_happened_fewer_than(
     type_id, x: int, events: list[dict], field_map: FieldMap
-) -> bool:
-    return _times_happened(events, type_id, field_map) < x
+) -> Decision:
+    return Decision(_times_happened(events, type_id, field_map) < x)
 
 
 def event_happened_at_least(
     type_id, x: int, events: list[dict], field_map: FieldMap
-) -> bool:
-    return _times_happened(events, type_id, field_map) >= x
+) -> Decision:
+    return Decision(_times_happened(events, type_id, field_map) >= x)
 
 
-def event_revoked(
-    type_id, events: list[dict], field_map: FieldMap
-) -> bool | datetime.datetime:
+def event_revoked(type_id, events: list[dict], field_map: FieldMap) -> Decision:
     revoked = [
         e for e in _events_of_type(events, type_id, field_map)
         if e.get(field_map.revoked_at) is not None
     ]
     if not revoked:
-        return False
-    return revoked[-1].get(field_map.revoked_at)
+        return Decision(False)
+    return Decision(True, when=revoked[-1].get(field_map.revoked_at))
 
 
 def delay_passed(
-    type_id, delay_days: int, events: list[dict], field_map: FieldMap
-) -> bool | datetime.datetime:
-    """Return the datetime when the delay will have passed, or False if no event exists."""
+    type_id,
+    delay_days: int,
+    events: list[dict],
+    field_map: FieldMap,
+    now: datetime.datetime | None = None,
+) -> Decision:
+    """Satisfied once `delay_days` have elapsed since the anchor event."""
     last_created_at = _last_created_at(events, type_id, field_map)
-    if last_created_at:
-        return last_created_at + datetime.timedelta(days=delay_days)
-    return False
+    if last_created_at is None:
+        return Decision(False)
+
+    if now is None:
+        now = datetime.datetime.now(datetime.timezone.utc)
+
+    threshold = last_created_at + datetime.timedelta(days=delay_days)
+    return Decision(now >= threshold, when=threshold)
 
 
 def payload_match(
@@ -149,7 +151,7 @@ def payload_match(
     field_map: FieldMap,
     type_id=None,
     seq_num: int = 0,
-) -> bool | datetime.datetime:
+) -> Decision:
     """Match a key/answer against a flat event dict.
 
     If type_id is given, only events of that type are considered.
@@ -162,22 +164,24 @@ def payload_match(
     )
     event = _event_at(active, seq_num)
     if event is None:
-        return False
-    return _key_match(event, key, answer, condition, field_map)
+        return Decision(False)
+    if not _key_match(event, key, answer, condition, field_map):
+        return Decision(False)
+    return Decision(True, when=event.get(field_map.created_at))
 
 
 def last_event_type_equals(
     type_id, seq_num: int, events: list[dict], field_map: FieldMap
-) -> bool | datetime.datetime:
-    """Return created_at if the nth-most-recent event (0 = most recent) matches type_id."""
+) -> Decision:
+    """Satisfied if the nth-most-recent event (0 = most recent) matches type_id."""
     events_reversed = list(reversed(events))
     try:
         event = events_reversed[seq_num]
-        if event.get(field_map.type_id) == type_id:
-            return event.get(field_map.created_at)
-        return False
     except IndexError:
-        return False
+        return Decision(False)
+    if event.get(field_map.type_id) == type_id:
+        return Decision(True, when=event.get(field_map.created_at))
+    return Decision(False)
 
 
 def available_on_date_range(
@@ -185,7 +189,7 @@ def available_on_date_range(
     end_date: str | None,
     timezone_offset: int,
     now: datetime.datetime | None = None,
-) -> bool | datetime.datetime:
+) -> Decision:
     if now is None:
         now = datetime.datetime.now(datetime.timezone.utc)
 
@@ -208,11 +212,15 @@ def available_on_date_range(
         )
         end_ok = now <= e_dt
 
-    if end_ok:
-        if not s_dt:
-            return True
-        return s_dt
-    return False
+    if not end_ok:
+        # A fixed range doesn't recur, so once it's closed there's no future
+        # date to predict.
+        return Decision(False, when=None)
+
+    if not s_dt:
+        return Decision(True, when=None)
+
+    return Decision(now >= s_dt, when=s_dt)
 
 
 def taken_recently(
@@ -222,10 +230,10 @@ def taken_recently(
     events: list[dict],
     field_map: FieldMap,
     now: datetime.datetime | None = None,
-) -> bool | datetime.datetime:
+) -> Decision:
     active = _active_events_of_type(events, type_id, field_map)
     if not active:
-        return False
+        return Decision(False)
 
     last_created_at = active[-1].get(field_map.created_at)
 
@@ -238,5 +246,7 @@ def taken_recently(
         now = datetime.datetime.now(datetime.timezone.utc)
 
     if now <= last_created_at + delta:
-        return last_created_at
-    return False
+        return Decision(True, when=last_created_at)
+    # Closing (falling-edge) condition: once the window closes there's no
+    # way to predict a future re-opening.
+    return Decision(False, when=None)

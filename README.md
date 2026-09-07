@@ -1,6 +1,6 @@
 # londec — Decision Maker
 
-Evaluate tree-structured, JSON-serializable conditions against an ordered history of typed events. Each condition resolves to either `False` or the `datetime` it was first satisfied — enabling eligibility checks, scheduling triggers, and automation rules that are stored as data, not code.
+Evaluate tree-structured, JSON-serializable conditions against an ordered history of typed events. Each condition resolves to a `Decision(satisfied, when)` — `satisfied` an explicit bool, `when` an optional timestamp — enabling eligibility checks, scheduling triggers, and automation rules that are stored as data, not code.
 
 > `londec` was created by [Longenesis](https://longenesis.com) to solve complex eligibility rules in patient journeys — deciding, from a participant's accumulating history of activities and submissions, whether and when they qualify for the next step. The library itself is domain-agnostic and works with any ordered event history, not just healthcare data.
 
@@ -12,10 +12,10 @@ flowchart TD
         E3["event_type: purchase · Jan 18"]
     end
 
-    EH["event_happened<br/>event_type: purchase<br/>→ Jan 18"]
-    DL["delay · days: 14<br/>event_type: purchase<br/>→ Feb 1"]
+    EH["event_happened<br/>event_type: purchase<br/>→ Decision(True, Jan 18)"]
+    DL["delay · days: 14<br/>event_type: purchase<br/>→ Decision(True, Feb 1)"]
     AND["AND<br/>max(Jan 18, Feb 1)"]
-    R(["datetime(Feb 1)"])
+    R(["Decision(True, Feb 1)"])
 
     events -.->|evaluate| EH
     events -.->|evaluate| DL
@@ -50,7 +50,7 @@ This pattern fits naturally wherever rules vary per tenant, per plan, or per cam
 
 ### When — not just whether
 
-A boolean answer is often not enough. If a rule is not yet satisfied, a scheduler needs to know *when* to check again. londec returns `False` when a condition is not satisfied, or the `datetime` it was first satisfied:
+A boolean answer is often not enough. If a rule is not yet satisfied, a scheduler needs to know *when* to check again. londec returns a `Decision(satisfied, when)`: `satisfied` is always an explicit, directly-computed bool — never inferred by comparing `when` to `now` after the fact — and `when` is an optional timestamp for lookahead/display:
 
 ```python
 result = londec.decide(
@@ -58,8 +58,10 @@ result = londec.decide(
     events=user_events,
     field_map=FIELD_MAP,
 )
-# False          → trial never started; nothing to schedule
-# datetime(...)  → the moment the 14-day window opens; schedule the follow-up for then
+# Decision(False, None)        → trial never started; nothing to schedule
+# Decision(False, datetime(...)) → trial started, but the 14-day window hasn't opened yet;
+#                                    `when` is the date it will
+# Decision(True, datetime(...))  → the window is open, since `when`
 ```
 
 This makes `londec` useful not just for access control ("is this user eligible right now?") but for proactive scheduling ("when should this rule next be evaluated or triggered?").
@@ -74,12 +76,12 @@ Use cases that benefit from this:
 
 ### Composable conditions with datetime propagation
 
-Conditions compose into AND/OR trees. When all branches resolve to datetimes, the combinator propagates them — rather than collapsing everything to a plain boolean — so the result remains useful for scheduling:
+Conditions compose into AND/OR trees. `satisfied` is always computed via genuine `all()`/`any()` over each child's own `satisfied` flag; `when` is aggregated separately, only among children that have one — so the result remains useful for scheduling without ever inferring satisfaction from a date comparison:
 
-- `AND` (`MAX_AND`) — satisfied when the *last* prerequisite is met; returns the latest datetime
-- `MIN_AND` — returns the earliest datetime (useful to know when the first prerequisite was met)
-- `OR` (`MIN_OR`) — satisfied as soon as *any* branch is; returns the earliest datetime
-- `MAX_OR` — returns the latest datetime across satisfied branches
+- `AND` (`MAX_AND`) — satisfied when the *last* prerequisite is met; reports the latest `when`
+- `MIN_AND` — same satisfaction as `AND`; reports the earliest `when` (useful to know when the first prerequisite was met)
+- `OR` (`MIN_OR`) — satisfied as soon as *any* branch is; reports the earliest `when`
+- `MAX_OR` — same satisfaction as `OR`; reports the latest `when` across satisfied branches
 
 ```python
 # "Eligible for a loyalty reward after placing 3 orders AND waiting 30 days since the first"
@@ -143,8 +145,9 @@ def test_eligible_after_onboarding_delay():
         {"type": "delay", "activity_id": "onboarding_complete", "days": 7},
         events=events,
         field_map=FIELD_MAP,
+        now=datetime(2026, 3, 8, tzinfo=UTC),
     )
-    assert result == datetime(2026, 3, 8, tzinfo=UTC)
+    assert result == Decision(True, datetime(2026, 3, 8, tzinfo=UTC))
 ```
 
 ---
@@ -229,11 +232,20 @@ All other event data — raw values, computed metrics, flags — is accessed dir
 
 A plain dict with a `"type"` key. If `"type"` is absent, the condition is treated as unconditionally satisfied (`True`). Composite conditions use `"list"` to hold sub-conditions.
 
-### Result: `bool | datetime`
+### Result: `Decision(satisfied, when)`
 
-- `False` — condition not satisfied
-- `True` — condition satisfied, no timestamp available (e.g. `event_not_happened`)
-- `datetime` — the moment the condition became satisfied
+```python
+class Decision(NamedTuple):
+    satisfied: bool
+    when: datetime.datetime | None = None
+```
+
+`satisfied` is always computed directly by whichever evaluator or combinator produced it — never inferred by comparing `when` to `now` after the fact. `when`, when present, means "since this date" if `satisfied` is `True`, or "predicted to become satisfied at this date" if `satisfied` is `False`. It's `None` whenever there's no meaningful date to report — a pure count-based check (e.g. `event_not_happened`), or a genuine dead end with no way to predict a future resolution.
+
+- `Decision(False, None)` — not satisfied, nothing to predict
+- `Decision(False, datetime(...))` — not satisfied yet, but predicted to become satisfied at this date (e.g. a `delay` whose threshold hasn't been reached)
+- `Decision(True, None)` — satisfied, no timestamp available (e.g. `event_happened_fewer_than`)
+- `Decision(True, datetime(...))` — satisfied since this date
 
 ---
 
@@ -241,22 +253,22 @@ A plain dict with a `"type"` key. If `"type"` is absent, the condition is treate
 
 ### Event occurrence
 
-| Type | Satisfied when | Returns |
+| Type | Satisfied when | `when` |
 |---|---|---|
 | `event_happened` | At least one non-revoked event of `activity_id` exists | `created_at` of the most recent |
-| `event_not_happened` | No non-revoked events of `activity_id` exist | `True` |
+| `event_not_happened` | No non-revoked events of `activity_id` exist | `None` |
 | `event_happened_exactly` | Exactly `x` non-revoked events of `activity_id` | `created_at` of the most recent |
-| `event_happened_fewer_than` | Fewer than `x` non-revoked events | `True` |
-| `event_happened_at_least` | `x` or more non-revoked events | `True` |
+| `event_happened_fewer_than` | Fewer than `x` non-revoked events | `None` |
+| `event_happened_at_least` | `x` or more non-revoked events | `None` |
 | `event_revoked` | A revoked event of `activity_id` exists | `revoked_at` of the most recent revoked event |
 
 ### Timing
 
-| Type | Fields | Satisfied when | Returns |
+| Type | Fields | Satisfied when | `when` |
 |---|---|---|---|
-| `delay` | `activity_id`, `days` | Always (if event exists) | `created_at + days` — the datetime the delay window opens |
-| `is_taken_recently` | `activity_id`, `duration_type` (`"days"`/`"hours"`), `duration` | Most recent event is within `duration` of `now` | `created_at` of that event |
-| `available_on_date_range` | `start_date`, `end_date` (ISO), `timezone_offset` (minutes) | `now` is within the date range | `start_date` (as datetime) |
+| `delay` | `activity_id`, `days` | `now >= created_at + days` | `created_at + days` — the threshold, whether or not it's been reached yet |
+| `is_taken_recently` | `activity_id`, `duration_type` (`"days"`/`"hours"`), `duration` | Most recent event is within `duration` of `now` | `created_at` of that event if satisfied, else `None` (a closing condition — no future re-opening to predict) |
+| `available_on_date_range` | `start_date`, `end_date` (ISO), `timezone_offset` (minutes) | `now` is within the date range | `start_date` (as datetime) before/during the range; `None` once the range has closed |
 
 ### Payload matching
 
@@ -274,18 +286,20 @@ A plain dict with a `"type"` key. If `"type"` is absent, the condition is treate
 
 ### Sequence
 
-| Type | Fields | Satisfied when | Returns |
+| Type | Fields | Satisfied when | `when` |
 |---|---|---|---|
 | `last_event_type_equals` | `activity_id`, `seq_num` | The event at position `seq_num` (most-recent-first) has `activity_id` | `created_at` of that event |
 
 ### Combinators
 
-| Type | Alias | Behaviour |
-|---|---|---|
-| `AND` | `MAX_AND` | All sub-conditions must be satisfied; returns the **latest** datetime |
-| `MIN_AND` | — | All must be satisfied; returns the **earliest** datetime |
-| `OR` | `MIN_OR` | Any sub-condition must be satisfied; returns the **earliest** datetime |
-| `MAX_OR` | — | Any must be satisfied; returns the **latest** datetime |
+`satisfied` is always computed via genuine `all()`/`any()` over each child's own `satisfied` flag; `when` is aggregated separately, only among children that have one.
+
+| Type | Alias | `satisfied` when | `when` (once satisfied) |
+|---|---|---|---|
+| `AND` | `MAX_AND` | Every child is satisfied | **latest** among children's `when` |
+| `MIN_AND` | — | Every child is satisfied (same as `AND`) | **earliest** among children's `when` |
+| `OR` | `MIN_OR` | Any child is satisfied | **earliest** among satisfied children's `when` |
+| `MAX_OR` | — | Any child is satisfied (same as `OR`) | **latest** among satisfied children's `when` |
 
 ---
 
