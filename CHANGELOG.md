@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project is in `0.x`; per common `0.x` convention, a breaking change is
 released as a minor version bump rather than a major one.
 
+## [0.2.1] - 2026-09-07
+
+### Added
+
+- Test suite reaches 100% line coverage: added `tests/test_exp_types.py`
+  (covering every `sub_type` expression evaluator, including numeric-parse
+  fallback and sentinel-value branches), plus tests for `_key_match`'s
+  unknown-`sub_type` and exception-handling paths and the wall-clock
+  `datetime.now(UTC)` fallback in `delay_passed`, `available_on_date_range`,
+  and `taken_recently` when `now` isn't passed in. No behavior changes.
+
 ## [0.2.0] - 2026-09-07
 
 ### Changed
@@ -48,5 +59,6 @@ Initial public release.
   `contains_any_of`/`contains_none_of`/`contains_all_of`,
   `is_subset_of`/`is_not_subset_of`, `true`/`false`).
 
+[0.2.1]: https://github.com/LongenesisLtd/decision-maker/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/LongenesisLtd/decision-maker/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/LongenesisLtd/decision-maker/releases/tag/v0.1.0
